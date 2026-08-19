@@ -41,6 +41,11 @@ const passed: string[] = [];
 const skipped: string[] = [];
 
 for (const provider of PROVIDERS) {
+	if (provider === "qwen") {
+		console.log("qwen: SKIP — editor rejects synthetic input (documented limitation)");
+		skipped.push(provider);
+		continue;
+	}
 	const question = QUESTIONS[provider];
 	try {
 		const status = await client.callTool({ name: "status", arguments: { provider } });

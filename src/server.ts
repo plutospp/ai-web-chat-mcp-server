@@ -32,6 +32,11 @@ const PROVIDERS = {
 	qwen: { appId: "callopjomjkljkgpgnflciibleibpnbp", keyword: "Qwen" },
 } as const;
 
+// Qwen Studio's editor rejects every synthetic input mechanism available to
+// the computer tool (typed keys, Tab-focused typing, clipboard paste, context
+// menus are suppressed); window launch/status/screenshot still work.
+const SEND_UNSUPPORTED = new Set<Provider>(["qwen"]);
+
 type Provider = keyof typeof PROVIDERS;
 const PROVIDER_ENUM = z.enum(Object.keys(PROVIDERS) as [Provider, ...Provider[]]);
 
@@ -212,13 +217,17 @@ await w.screenshot({ silent: false });
 }
 
 async function toolSend(provider: Provider, message: string): Promise<ContentBlock[]> {
+	if (SEND_UNSUPPORTED.has(provider)) {
+		throw new Error(
+			`${provider}: editor rejects all synthetic input (typed, paste, context menu) — not automatable; use screenshot/read only`,
+		);
+	}
 	const win = await findProviderWindow(provider);
 	const msgLit = JSON.stringify(message);
 	const r = await runSup(
 		`const w = ${FIND_HINT(win)};
 w.raise();
 await new Promise(r => setTimeout(r, 3000));
-const baseShot = await w.screenshot({ silent: true });
 const hashPng = async (p) => {
 	try {
 		const buf = await Bun.file(p).arrayBuffer();
@@ -228,7 +237,15 @@ const hashPng = async (p) => {
 		return view.length + ":" + a;
 	} catch { return ""; }
 };
-const baseHash = await hashPng(baseShot.path);
+// stable baseline: pixel-diff confirmation is only trustworthy once the page
+// stopped animating (a still-loading page made a false positive pass before)
+let baseHash = "";
+for (let i = 0; i < 8; i++) {
+	const h1 = await hashPng((await w.screenshot({ silent: true })).path);
+	await new Promise(r => setTimeout(r, 700));
+	const h2 = await hashPng((await w.screenshot({ silent: true })).path);
+	if (h1 && h1 === h2) { baseHash = h1; break; }
+}
 const msg = ${msgLit};
 const norm = s => String(s).replace(/\s+/g, "");
 const probe = msg.slice(0, 30);
