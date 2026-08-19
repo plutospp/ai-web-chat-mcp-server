@@ -180,6 +180,11 @@ const caps = await desktop.capabilities();
 }
 
 async function toolNewChat(provider: Provider): Promise<ContentBlock[]> {
+	if (SEND_UNSUPPORTED.has(provider)) {
+		throw new Error(
+			`${provider}: editor rejects all synthetic input (typed, paste, context menu) — not automatable; use screenshot/read only`,
+		);
+	}
 	// Every PWA resumes its last conversation; the sidebar new-chat button
 	// (localized variants below) starts a fresh one in the same window.
 	const win = await findProviderWindow(provider);
