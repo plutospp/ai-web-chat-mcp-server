@@ -1,12 +1,13 @@
 /**
- * ai-web-chat-mcp-server — MCP stdio server that chats with AI web apps
- * (chatgpt, claude, gemini, deepseek, grok, zai, kimi) running in Google
- * Chrome on Windows, via the omp computer-tool supervisor.
+ * ai-web-chat-mcp-server — MCP stdio server that chats with AI desktop apps
+ * (chatgpt, claude, gemini, deepseek, grok, zai, kimi, qwen). All eight run
+ * as taskbar-pinned Chrome PWAs (chrome_proxy --app-id=...) driven through
+ * the omp computer-tool supervisor.
  *
  * Tools: status, new_chat, send, read_reply, screenshot — each takes a
- * `provider`. All desktop actions are mutex-serialized; input always uses
- * foreground delivery (Chromium drops background input); replies are read
- * from returned screenshots (Chromium keeps reply text out of AX).
+ * `provider`. All desktop actions are mutex-serialized; PWA input always
+ * uses foreground delivery (Chromium drops background input); replies are
+ * read from returned screenshots (Chromium keeps reply text out of AX).
  */
 import * as os from "node:os";
 import * as path from "node:path";
@@ -31,11 +32,6 @@ const PROVIDERS = {
 	kimi: { appId: "glpbkcdjcimgmjagngpeidnkiojjookh", keyword: "Kimi" },
 	qwen: { appId: "callopjomjkljkgpgnflciibleibpnbp", keyword: "Qwen" },
 } as const;
-
-// Qwen Studio's editor rejects every synthetic input mechanism available to
-// the computer tool (typed keys, Tab-focused typing, clipboard paste, context
-// menus are suppressed); window launch/status/screenshot still work.
-const SEND_UNSUPPORTED = new Set<Provider>(["qwen"]);
 
 type Provider = keyof typeof PROVIDERS;
 const PROVIDER_ENUM = z.enum(Object.keys(PROVIDERS) as [Provider, ...Provider[]]);
@@ -180,11 +176,6 @@ const caps = await desktop.capabilities();
 }
 
 async function toolNewChat(provider: Provider): Promise<ContentBlock[]> {
-	if (SEND_UNSUPPORTED.has(provider)) {
-		throw new Error(
-			`${provider}: editor rejects all synthetic input (typed, paste, context menu) — not automatable; use screenshot/read only`,
-		);
-	}
 	// Every PWA resumes its last conversation; the sidebar new-chat button
 	// (localized variants below) starts a fresh one in the same window.
 	const win = await findProviderWindow(provider);
@@ -222,17 +213,13 @@ await w.screenshot({ silent: false });
 }
 
 async function toolSend(provider: Provider, message: string): Promise<ContentBlock[]> {
-	if (SEND_UNSUPPORTED.has(provider)) {
-		throw new Error(
-			`${provider}: editor rejects all synthetic input (typed, paste, context menu) — not automatable; use screenshot/read only`,
-		);
-	}
 	const win = await findProviderWindow(provider);
 	const msgLit = JSON.stringify(message);
 	const r = await runSup(
 		`const w = ${FIND_HINT(win)};
 w.raise();
 await new Promise(r => setTimeout(r, 3000));
+const baseShot = await w.screenshot({ silent: true });
 const hashPng = async (p) => {
 	try {
 		const buf = await Bun.file(p).arrayBuffer();
@@ -242,8 +229,6 @@ const hashPng = async (p) => {
 		return view.length + ":" + a;
 	} catch { return ""; }
 };
-// stable baseline: pixel-diff confirmation is only trustworthy once the page
-// stopped animating (a still-loading page made a false positive pass before)
 let baseHash = "";
 for (let i = 0; i < 8; i++) {
 	const h1 = await hashPng((await w.screenshot({ silent: true })).path);
@@ -252,18 +237,22 @@ for (let i = 0; i < 8; i++) {
 	if (h1 && h1 === h2) { baseHash = h1; break; }
 }
 const msg = ${msgLit};
-const norm = s => String(s).replace(/\s+/g, "");
+const norm = s => String(s).replace(/\\s+/g, "");
 const probe = msg.slice(0, 30);
 let savedClip = "";
 try { savedClip = String(await desktop.clipboard.read() ?? ""); } catch {}
 await desktop.clipboard.write(msg);
 const candidates = [
+	// Qwen Studio / sidebar-offset new-chat layout (center of right pane)
+	[Math.round(${win.width} * 0.63), Math.round(${win.height} * 0.485)],
+	// Centered new-chat layouts (ChatGPT, Claude, Grok, Z.ai)
 	[Math.round(${win.width} * 0.5), Math.round(${win.height} * 0.40)],
+	[Math.round(${win.width} * 0.5), Math.round(${win.height} * 0.44)],
 	[Math.round(${win.width} * 0.5), Math.round(${win.height} * 0.52)],
 	[Math.round(${win.width} * 0.5), Math.round(${win.height} * 0.85)],
-	[Math.round(${win.width} * 0.5), ${win.height} - 90],
 	[Math.round(${win.width} * 0.5), ${win.height} - 40],
 	[Math.round(${win.width} * 0.5), ${win.height} - 60],
+	[Math.round(${win.width} * 0.5), ${win.height} - 90],
 	[Math.round(${win.width} * 0.5), ${win.height} - 110],
 ];
 let confirmed = "";
@@ -280,13 +269,11 @@ const checkDraft = async (cx, cy) => {
 	} catch {}
 	return false;
 };
-// AX-blind editors (gemini, z.ai, qwen): value() reports the page URL and
-// paste events never land; typed input works and only pixels prove it.
 const axBlind = async () => {
 	try {
 		const fe = await desktop.focusedElement();
 		const val = fe ? String(await fe.value()) : "";
-		return /^https?:\/\//.test(val) || val === "undefined";
+		return /^https?:\\/\\//.test(val) || val === "undefined";
 	} catch { return true; }
 };
 let typedUsed = false;
@@ -295,7 +282,6 @@ for (let round = 0; round < 2 && !confirmed; round++) {
 	for (const [cx, cy] of candidates) {
 		await w.click(cx, cy, { delivery: "foreground" });
 		await new Promise(r => setTimeout(r, 300));
-		// paste-over-selection replaces whatever the editor holds
 		await w.press("ctrl+a", { delivery: "foreground" });
 		await w.press("ctrl+v", { delivery: "foreground" });
 		await new Promise(r => setTimeout(r, 400));
@@ -318,7 +304,6 @@ for (let round = 0; round < 2 && !confirmed; round++) {
 				const afterHash = await hashPng((await w.screenshot({ silent: true })).path);
 				if (afterHash && afterHash !== baseHash) { confirmed = "typed-unverified"; break; }
 			} else {
-				// sighted editor that rejected the paste: clear, verify empty, type
 				typedUsed = true;
 				await w.press("ctrl+a", { delivery: "foreground" });
 				await w.press("Delete", { delivery: "foreground" });
@@ -441,7 +426,7 @@ const providerDesc = "chatgpt | claude | gemini | deepseek | grok | zai | kimi |
 server.registerTool(
 	"status",
 	{
-		description: `Locate (or open) the ${providerDesc} web app window in Chrome; returns geometry and capabilities.`,
+		description: `Locate (or open) the ${providerDesc} desktop app window; returns geometry and capabilities.`,
 		inputSchema: { provider: PROVIDER_ENUM },
 	},
 	args => withErrorBoundary(() => toolStatus(args.provider)),
@@ -450,7 +435,7 @@ server.registerTool(
 server.registerTool(
 	"new_chat",
 	{
-		description: `Open a fresh conversation in the ${providerDesc} web app. Returns a screenshot of the new-chat view.`,
+		description: `Open a fresh conversation in the ${providerDesc} desktop app. Returns a screenshot of the new-chat view.`,
 		inputSchema: { provider: PROVIDER_ENUM },
 	},
 	args => withErrorBoundary(() => toolNewChat(args.provider)),
@@ -460,7 +445,7 @@ server.registerTool(
 	"send",
 	{
 		description:
-			`Send a message in the ${providerDesc} web app. Write messages in natural human style — never loop-test phrasing or automation language. Returns a screenshot; verify the user bubble is visible.`,
+			`Send a message in the ${providerDesc} desktop app. Write messages in natural human style — never loop-test phrasing or automation language. Returns a screenshot; verify the user bubble is visible.`,
 		inputSchema: {
 			provider: PROVIDER_ENUM,
 			message: z.string().describe("Message text to send"),
@@ -485,7 +470,7 @@ server.registerTool(
 server.registerTool(
 	"screenshot",
 	{
-		description: `Capture the current ${providerDesc} web app window; returns the PNG path and image.`,
+		description: `Capture the current ${providerDesc} desktop app window; returns the PNG path and image.`,
 		inputSchema: { provider: PROVIDER_ENUM },
 	},
 	args => withErrorBoundary(() => toolScreenshot(args.provider)),
