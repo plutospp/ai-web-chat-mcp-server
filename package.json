@@ -1,0 +1,12 @@
+{
+	"name": "ai-web-chat-mcp-server",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"start": "bun src/server.ts",
+		"test": "bun test-client.ts"
+	},
+	"dependencies": {
+		"@modelcontextprotocol/sdk": "^1.30.0"
+	}
+}
