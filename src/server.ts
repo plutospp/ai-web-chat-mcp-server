@@ -22,6 +22,8 @@ const CHROME_PROXY = "C:/Program Files/Google/Chrome/Application/chrome_proxy.ex
 
 // Each AI runs as a taskbar-pinned Chrome PWA (chrome_proxy --app-id=...);
 // launching a running PWA focuses its single window instead of opening a tab.
+// `first` is the composer position as [width, height] fractions, tried before
+// the generic candidate list (Cursor's composer sits high, ~0.22h).
 const PROVIDERS = {
 	chatgpt: { appId: "nnjgmfocjdenbibfdolbnhohghkkaeed", keyword: "ChatGPT" },
 	claude: { appId: "fmpnliohjhemenmnlpbfagaolkdacoja", keyword: "Claude" },
@@ -31,10 +33,17 @@ const PROVIDERS = {
 	zai: { appId: "gdgigfecimkcdjjhnglafmbeafpchpmf", keyword: "Z.ai" },
 	kimi: { appId: "glpbkcdjcimgmjagngpeidnkiojjookh", keyword: "Kimi" },
 	qwen: { appId: "callopjomjkljkgpgnflciibleibpnbp", keyword: "Qwen" },
+	cursor: { appId: "appgkjomdnhhdolojlpkjafpklojikld", keyword: "Cursor", first: [0.5, 0.22] },
 } as const;
 
 type Provider = keyof typeof PROVIDERS;
 const PROVIDER_ENUM = z.enum(Object.keys(PROVIDERS) as [Provider, ...Provider[]]);
+
+// Cursor Agent renders an enabled-looking send arrow but silently ignores
+// every submit path (Enter, Ctrl/Meta+Enter, precise arrow clicks) until the
+// user completes the app's one-time "Set Up Cloud Agents" flow manually.
+// status/new_chat/screenshot work; send stays blocked by that app state.
+const SEND_APP_GATED = new Set<Provider>(["cursor"]);
 
 const SUPERVISOR_PATH = path.join(
 	os.homedir(),
@@ -213,6 +222,11 @@ await w.screenshot({ silent: false });
 }
 
 async function toolSend(provider: Provider, message: string): Promise<ContentBlock[]> {
+	if (SEND_APP_GATED.has(provider)) {
+		throw new Error(
+			`${provider}: send is gated by the app's pending "Set Up Cloud Agents" one-time setup — complete it manually in the app, then this provider will submit normally`,
+		);
+	}
 	const win = await findProviderWindow(provider);
 	const msgLit = JSON.stringify(message);
 	const r = await runSup(
@@ -243,6 +257,8 @@ let savedClip = "";
 try { savedClip = String(await desktop.clipboard.read() ?? ""); } catch {}
 await desktop.clipboard.write(msg);
 const candidates = [
+	// provider-specific composer position (Cursor: high composer at ~0.22h)
+	${PROVIDERS[provider].first ? `[Math.round(${win.width} * ${PROVIDERS[provider].first[0]}), Math.round(${win.height} * ${PROVIDERS[provider].first[1]})],` : ""}
 	// Qwen Studio / sidebar-offset new-chat layout (center of right pane)
 	[Math.round(${win.width} * 0.63), Math.round(${win.height} * 0.485)],
 	// Centered new-chat layouts (ChatGPT, Claude, Grok, Z.ai)
@@ -421,7 +437,7 @@ function withErrorBoundary(fn: () => Promise<ContentBlock[]>): Promise<CallToolR
 	);
 }
 
-const providerDesc = "chatgpt | claude | gemini | deepseek | grok | zai | kimi | qwen";
+const providerDesc = "chatgpt | claude | gemini | deepseek | grok | zai | kimi | qwen | cursor";
 
 server.registerTool(
 	"status",

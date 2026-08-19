@@ -20,8 +20,9 @@ const QUESTIONS: Record<string, string> = {
 	zai: "What models does Z.ai currently offer?",
 	kimi: "What is the maximum context length you support?",
 	qwen: "What coding models are available right now?",
+	cursor: "What languages and frameworks does Cursor Agent support?",
 };
-const PROVIDERS = ["chatgpt", "claude", "gemini", "deepseek", "grok", "zai", "kimi", "qwen"] as const;
+const PROVIDERS = ["chatgpt", "claude", "gemini", "deepseek", "grok", "zai", "kimi", "qwen", "cursor"] as const;
 
 const shotsDir = path.join(import.meta.dir, "shots");
 mkdirSync(shotsDir, { recursive: true });
@@ -39,8 +40,12 @@ console.log("tools:", tools.tools.map(t => t.name).sort().join(", "));
 
 const passed: string[] = [];
 const skipped: string[] = [];
-
 for (const provider of PROVIDERS) {
+	if (provider === "cursor") {
+		console.log("cursor: SKIP — send gated by pending Set-Up-Cloud-Agents (documented; one-time manual setup)");
+		skipped.push(provider);
+		continue;
+	}
 	const question = QUESTIONS[provider];
 	try {
 		const status = await client.callTool({ name: "status", arguments: { provider } });
