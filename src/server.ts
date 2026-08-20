@@ -19,6 +19,69 @@ import { z } from "zod";
 import type { ComputerSupervisor } from "@oh-my-pi/pi-coding-agent/src/tools/computer/supervisor";
 
 const CHROME_PROXY = "C:/Program Files/Google/Chrome/Application/chrome_proxy.exe";
+// GPT Researcher integration: grounded, cited web research as the first
+// phase of the consultation workflow. Runs in its own venv (Python 3.12 —
+// the PyPI release's numpy pin has no 3.14 wheels) with duckduckgo retrieval
+// and local HuggingFace embeddings; the LLM goes through the user's
+// OpenAI-compatible qwen-cloud endpoint, whose baseUrl/apiKey are read at
+// runtime from ~/.omp/agent/models.yml (never hardcoded in this repo).
+const RESEARCH_PY = "D:/gpt-researcher/.venv/Scripts/python.exe";
+const RESEARCH_SCRIPT = path.join(import.meta.dir, "..", "research.py");
+
+let researchEnv: Record<string, string> | null = null;
+
+async function loadResearchEnv(): Promise<Record<string, string>> {
+	if (researchEnv) return researchEnv;
+	const yml = await Bun.file(path.join(os.homedir(), ".omp/agent/models.yml")).text();
+	// Prefer agnes (active quota); fallback to qwen-cloud
+	let baseUrl = "";
+	let apiKey = "";
+	let model = "agnes-2.5-flash";
+	const agnesBlock = yml.split("agnes:")[1]?.split(/\n  \S/)[0] ?? "";
+	const qwenBlock = yml.split("qwen-cloud:")[1]?.split(/\n  \S/)[0] ?? "";
+	if (agnesBlock.includes("apiKey:")) {
+		baseUrl = agnesBlock.match(/baseUrl:\s*(\S+)/)?.[1] ?? "https://apihub.agnes-ai.com/v1";
+		apiKey = agnesBlock.match(/apiKey:\s*(\S+)/)?.[1] ?? "";
+		model = "agnes-2.5-flash";
+	} else if (qwenBlock.includes("apiKey:")) {
+		baseUrl = qwenBlock.match(/baseUrl:\s*(\S+)/)?.[1] ?? "";
+		apiKey = qwenBlock.match(/apiKey:\s*(\S+)/)?.[1] ?? "";
+		model = "qwen3.8-max";
+	}
+	if (!baseUrl || !apiKey) throw new Error("research: no usable LLM endpoint found in ~/.omp/agent/models.yml");
+	researchEnv = {
+		...process.env,
+		RETRIEVER: "duckduckgo",
+		LLM_PROVIDER: "openai",
+		SMART_LLM: `openai:${model}`,
+		FAST_LLM: `openai:${model}`,
+		STRATEGIC_LLM: `openai:${model}`,
+		EMBEDDING: "huggingface:sentence-transformers/all-MiniLM-L6-v2",
+		OPENAI_BASE_URL: baseUrl,
+		OPENAI_API_KEY: apiKey,
+	};
+	return researchEnv;
+}
+
+async function toolResearch(query: string, reportType: string): Promise<ContentBlock[]> {
+	const proc = Bun.spawn([RESEARCH_PY, RESEARCH_SCRIPT, query, reportType], {
+		env: await loadResearchEnv(),
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	const [stdout, stderr, exitCode] = await Promise.all([
+		new Response(proc.stdout).text(),
+		new Response(proc.stderr).text(),
+		proc.exited,
+	]);
+	if (exitCode !== 0) {
+		throw new Error(`research failed (exit ${exitCode}): ${stderr.slice(-500)}`);
+	}
+	const start = stdout.indexOf("{");
+	if (start < 0) throw new Error(`research returned no JSON: ${stdout.slice(0, 300)}`);
+	return [textBlock(JSON.parse(stdout.slice(start)))];
+}
+
 
 // Each AI runs as a taskbar-pinned Chrome PWA (chrome_proxy --app-id=...);
 // launching a running PWA focuses its single window instead of opening a tab.
@@ -479,6 +542,19 @@ server.registerTool(
 		inputSchema: { provider: PROVIDER_ENUM },
 	},
 	args => withErrorBoundary(() => toolScreenshot(args.provider)),
+);
+
+server.registerTool(
+	"research",
+	{
+		description:
+			"Run GPT Researcher on a query and return a cited web research report ({query, report, sources}). Use as the grounded-research phase before consulting the AI desktop apps. Runs can take 2-5 minutes.",
+		inputSchema: {
+			query: z.string().describe("Research question"),
+			report_type: z.string().optional().describe("GPT Researcher report type (default research_report)"),
+		},
+	},
+	args => withErrorBoundary(() => toolResearch(args.query, args.report_type ?? "research_report")),
 );
 
 async function shutdown(): Promise<void> {
