@@ -39,12 +39,6 @@ const PROVIDERS = {
 type Provider = keyof typeof PROVIDERS;
 const PROVIDER_ENUM = z.enum(Object.keys(PROVIDERS) as [Provider, ...Provider[]]);
 
-// Cursor Agent renders an enabled-looking send arrow but silently ignores
-// every submit path (Enter, Ctrl/Meta+Enter, precise arrow clicks) until the
-// user completes the app's one-time "Set Up Cloud Agents" flow manually.
-// status/new_chat/screenshot work; send stays blocked by that app state.
-const SEND_APP_GATED = new Set<Provider>(["cursor"]);
-
 const SUPERVISOR_PATH = path.join(
 	os.homedir(),
 	".bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/tools/computer/supervisor.ts",
@@ -222,11 +216,6 @@ await w.screenshot({ silent: false });
 }
 
 async function toolSend(provider: Provider, message: string): Promise<ContentBlock[]> {
-	if (SEND_APP_GATED.has(provider)) {
-		throw new Error(
-			`${provider}: send is gated by the app's pending "Set Up Cloud Agents" one-time setup — complete it manually in the app, then this provider will submit normally`,
-		);
-	}
 	const win = await findProviderWindow(provider);
 	const msgLit = JSON.stringify(message);
 	const r = await runSup(

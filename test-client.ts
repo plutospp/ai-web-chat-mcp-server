@@ -36,28 +36,24 @@ const client = new Client({ name: "ai-web-chat-test-client", version: "1.0.0" })
 await client.connect(transport);
 
 const tools = await client.listTools();
-console.log("tools:", tools.tools.map(t => t.name).sort().join(", "));
+const call = (name: string, args: Record<string, unknown>, timeout = 90_000) =>
+	client.callTool({ name, arguments: args }, undefined, { timeout });
 
 const passed: string[] = [];
 const skipped: string[] = [];
 for (const provider of PROVIDERS) {
-	if (provider === "cursor") {
-		console.log("cursor: SKIP — send gated by pending Set-Up-Cloud-Agents (documented; one-time manual setup)");
-		skipped.push(provider);
-		continue;
-	}
 	const question = QUESTIONS[provider];
 	try {
-		const status = await client.callTool({ name: "status", arguments: { provider } });
+		const status = await call("status", { provider });
 		if (status.isError) throw new Error(`status: ${JSON.stringify(status.content[0])}`);
 
-		const newChat = await client.callTool({ name: "new_chat", arguments: { provider } });
+		const newChat = await call("new_chat", { provider });
 		if (newChat.isError) throw new Error(`new_chat: ${JSON.stringify(newChat.content[0])}`);
-
-		const send = await client.callTool({ name: "send", arguments: { provider, message: question } });
+		const send = await call("send", { provider, message: question }, 120_000);
 		if (send.isError) throw new Error(`send: ${JSON.stringify(send.content[0])}`);
 
-		const reply = await client.callTool({ name: "read_reply", arguments: { provider, waitMs: 35_000 } });
+		const waitMs = provider === "cursor" ? 120_000 : 35_000;
+		const reply = await call("read_reply", { provider, waitMs }, waitMs + 60_000);
 
 		const textBlock = reply.content.find(b => b.type === "text");
 		const imageBlock = reply.content.find(b => b.type === "image");
